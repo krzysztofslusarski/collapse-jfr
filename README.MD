@@ -24,5 +24,30 @@ Output files:
 
 will be created in the directory you started process.
 
+## Access log filter
+Collapse-jfr can filter your stack with 
+* end date
+* duration
+* thread id
+
+It is design for access log/common log format.
+
+Usage:
+```
+java -jar collapse-jfr-full.jar -d <dir> <end date> <duration>
+java -jar collapse-jfr-full.jar -d <dir> <end date> <duration> <thread>
+java -jar collapse-jfr-full.jar -f <file> <end date> <duration>
+java -jar collapse-jfr-full.jar -f <file> <end date> <duration> <thread>
+``` 
+Example:
+For access log entry: 
+```
+[17/Sep/2020:13:03:23 +0200] [POST /app/request HTTP/1.1] [302] [- bytes] [23513 ms] [http-nio-8080-exec-250]
+```
+You can run:
+```
+java -jar collapse-jfr-full.jar -d . "17/Sep/2020:13:03:23 +0200" 23513 http-nio-8080-exec-250
+```
+
 
   

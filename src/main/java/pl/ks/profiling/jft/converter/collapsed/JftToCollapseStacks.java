@@ -93,7 +93,7 @@ public class JftToCollapseStacks {
         System.out.println("  java -jar collapse-jfr-full.jar -f <file> <end date> <duration> <thread>");
         System.out.println("Example:");
         System.out.println("  access log entry: [17/Sep/2020:13:03:23 +0200] [POST /app/request HTTP/1.1] [302] [- bytes] [23513 ms] [http-nio-8080-exec-250]");
-        System.out.println("  collapse-jfr-full.jar -d . \"17/Sep/2020:13:03:23 +0200\" 23513 http-nio-8080-exec-250");
+        System.out.println("  java -jar collapse-jfr-full.jar -d . \"17/Sep/2020:13:03:23 +0200\" 23513 http-nio-8080-exec-250");
     }
 
     private static void parseFile(Path file, Instant startDate, Instant endDate, String thread) {
