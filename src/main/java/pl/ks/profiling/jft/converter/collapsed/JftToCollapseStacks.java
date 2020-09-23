@@ -20,11 +20,18 @@ import static pl.ks.profiling.jft.converter.collapsed.JfrParser.validEvent;
 
 import com.jrockit.mc.flightrecorder.FlightRecording;
 import com.jrockit.mc.flightrecorder.FlightRecordingLoader;
+import com.jrockit.mc.flightrecorder.internal.model.FLRThread;
 import com.jrockit.mc.flightrecorder.spi.IEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 public class JftToCollapseStacks {
@@ -32,20 +39,38 @@ public class JftToCollapseStacks {
     private static final Map<String, IntHolder> CPU_MAP = new HashMap<>();
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
+        if (args.length < 2) {
             printInfo();
             System.exit(-1);
         }
+
+        String commonLogDateStr = null;
+        String durationTimeMsStr = null;
+
+        String thread = null;
+        if (args.length > 4) {
+            commonLogDateStr = args[2];
+            durationTimeMsStr = args[3];
+        }
+
+        if (args.length == 5) {
+            thread = args[4];
+        }
+        Instant endDate = commonLogDateStr == null ? null : getCommonLogDate(commonLogDateStr).plus(1, ChronoUnit.SECONDS);
+        Long timeMs = durationTimeMsStr == null ? null : Long.parseLong(durationTimeMsStr);
+        Instant startDate = endDate == null || timeMs == null ? null : endDate.minus(1, ChronoUnit.SECONDS).minus(timeMs, ChronoUnit.MILLIS);
+
+        String threadLowerCase = thread == null ? null : thread.trim().toLowerCase();
 
         switch (args[0]) {
             case "-d":
                 Files.walk(Paths.get(args[1]))
                         .filter(Files::isRegularFile)
                         .filter(file -> file.getFileName().toString().endsWith(".jfr"))
-                        .forEach(JftToCollapseStacks::parseFile);
+                        .forEach(file1 -> parseFile(file1, startDate, endDate, threadLowerCase));
                 break;
             case "-f":
-                parseFile(Paths.get(args[1]));
+                parseFile(Paths.get(args[1]), startDate, endDate, threadLowerCase);
                 break;
         }
 
@@ -58,11 +83,20 @@ public class JftToCollapseStacks {
 
     private static void printInfo() {
         System.out.println("Unrecognized options, proper usage:");
-        System.out.println("  java -jar collapse-jfr -d <dir> - will merge all files with .jfr extensions to cpu/wall collapsed stack files");
-        System.out.println("  java -jar collapse-jfr -f <file> - will convert one file to cpu/wall collapsed stack files");
+        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> - will merge all files with .jfr extensions to cpu/wall collapsed stack files");
+        System.out.println("  java -jar collapse-jfr-full.jar -f <file> - will convert one file to cpu/wall collapsed stack files");
+        System.out.println("You can add end date in \"Common Log Format\" and duration in ms to filter by time.");
+        System.out.println("It is designed to use with access log files. Usage:");
+        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> <end date> <duration>");
+        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> <end date> <duration> <thread>");
+        System.out.println("  java -jar collapse-jfr-full.jar -f <file> <end date> <duration>");
+        System.out.println("  java -jar collapse-jfr-full.jar -f <file> <end date> <duration> <thread>");
+        System.out.println("Example:");
+        System.out.println("  access log entry: [17/Sep/2020:13:03:23 +0200] [POST /app/request HTTP/1.1] [302] [- bytes] [23513 ms] [http-nio-8080-exec-250]");
+        System.out.println("  collapse-jfr-full.jar -d . \"17/Sep/2020:13:03:23 +0200\" 23513 http-nio-8080-exec-250");
     }
 
-    private static void parseFile(Path file) {
+    private static void parseFile(Path file, Instant startDate, Instant endDate, String thread) {
         System.out.println("Input file: " + file.getFileName());
         System.out.println("Converting JFR to collapsed stack ...");
 
@@ -72,6 +106,21 @@ public class JftToCollapseStacks {
             for (IEvent event : flightRecording.createView()) {
                 if (!validEvent(event)) {
                     continue;
+                }
+
+                if (endDate != null && startDate != null) {
+                    long startTimestamp = event.getStartTimestamp();
+                    Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+                    if (eventDate.isBefore(startDate) || eventDate.isAfter(endDate)) {
+                        continue;
+                    }
+                }
+
+                if (thread != null) {
+                    FLRThread loggedThread = (FLRThread) event.getValue("(thread)");
+                    if (loggedThread != null && !thread.equals(loggedThread.getName().toLowerCase())) {
+                        continue;
+                    }
                 }
 
                 String stacktrace = fetchFlatStackTrace(event);
@@ -95,5 +144,11 @@ public class JftToCollapseStacks {
 
     private static void addToWallMap(String stacktrace) {
         WALL_MAP.computeIfAbsent(stacktrace, stack -> new IntHolder()).increment();
+    }
+
+    private static Instant getCommonLogDate(String commonLogDate) throws ParseException {
+        SimpleDateFormat formatter = new SimpleDateFormat("dd/MMM/yyyy:HH:mm:ss Z", Locale.US);
+        Date parse = formatter.parse(commonLogDate);
+        return Instant.ofEpochMilli(parse.getTime());
     }
 }
