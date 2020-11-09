@@ -3,6 +3,9 @@ This application is a converter from JFR file produced by **Async-profiler** in 
 * CPU collapsed stack
 * Wall-clock collapsed stack
 
+## Aync-profiler version
+This tool works with Async-profiler in 1.* version. I will release new project for 2.*.
+
 ## How to compile
 Unfortunately this application depends on Oracle JDK 8 jars, which are not in maven repository, so you have to build your version yourself.
 
