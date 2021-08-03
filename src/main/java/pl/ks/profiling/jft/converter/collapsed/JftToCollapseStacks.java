@@ -22,6 +22,10 @@ import com.jrockit.mc.flightrecorder.FlightRecording;
 import com.jrockit.mc.flightrecorder.FlightRecordingLoader;
 import com.jrockit.mc.flightrecorder.internal.model.FLRThread;
 import com.jrockit.mc.flightrecorder.spi.IEvent;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -37,6 +41,8 @@ import java.util.Map;
 public class JftToCollapseStacks {
     private static final Map<String, IntHolder> WALL_MAP = new HashMap<>();
     private static final Map<String, IntHolder> CPU_MAP = new HashMap<>();
+    private static final SimpleDateFormat ACCESS_LOG_FORMAT = new SimpleDateFormat("dd/MMM/yyyy:HH:mm:ss Z", Locale.US);
+    private static final SimpleDateFormat OUTPUT_FORMAT = new SimpleDateFormat("yyyy.MM.dd:HH:mm:ss", Locale.US);
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
@@ -68,12 +74,25 @@ public class JftToCollapseStacks {
                         .filter(Files::isRegularFile)
                         .filter(file -> file.getFileName().toString().endsWith(".jfr"))
                         .forEach(file1 -> parseFile(file1, startDate, endDate, threadLowerCase));
+                writeToFile();
                 break;
             case "-f":
                 parseFile(Paths.get(args[1]), startDate, endDate, threadLowerCase);
+                writeToFile();
+                break;
+            case "-dt":
+                Files.walk(Paths.get(args[1]))
+                        .filter(Files::isRegularFile)
+                        .filter(file -> file.getFileName().toString().endsWith(".jfr"))
+                        .forEach(JftToCollapseStacks::writeCollapsedWithTimestamp);
+                break;
+            case "-ft":
+                writeCollapsedWithTimestamp(Paths.get(args[1]));
                 break;
         }
+    }
 
+    private static void writeToFile() throws IOException {
         System.out.println("Saving to collapsed stack files...");
         String saveDir = Paths.get("").toAbsolutePath().toString();
         CollapsedStackWriter.saveFile(saveDir, "wall.collapsed", WALL_MAP);
@@ -85,6 +104,8 @@ public class JftToCollapseStacks {
         System.out.println("Unrecognized options, proper usage:");
         System.out.println("  java -jar collapse-jfr-full.jar -d <dir> - will merge all files with .jfr extensions to cpu/wall collapsed stack files");
         System.out.println("  java -jar collapse-jfr-full.jar -f <file> - will convert one file to cpu/wall collapsed stack files");
+        System.out.println("  java -jar collapse-jfr-full.jar -dt <dir> - will merge all files with .jfr extensions to cpu/wall collapsed stack files (with timestamp)");
+        System.out.println("  java -jar collapse-jfr-full.jar -ft <file> - will convert one file to cpu/wall collapsed stack files (with timestamp)");
         System.out.println("You can add end date in \"Common Log Format\" and duration in ms to filter by time.");
         System.out.println("It is designed to use with access log files. Usage:");
         System.out.println("  java -jar collapse-jfr-full.jar -d <dir> <end date> <duration>");
@@ -94,6 +115,45 @@ public class JftToCollapseStacks {
         System.out.println("Example:");
         System.out.println("  access log entry: [17/Sep/2020:13:03:23 +0200] [POST /app/request HTTP/1.1] [302] [- bytes] [23513 ms] [http-nio-8080-exec-250]");
         System.out.println("  java -jar collapse-jfr-full.jar -d . \"17/Sep/2020:13:03:23 +0200\" 23513 http-nio-8080-exec-250");
+    }
+
+    private static void writeCollapsedWithTimestamp(Path file) {
+        System.out.println("Input file: " + file.getFileName());
+        System.out.println("Converting JFR to collapsed stack ...");
+
+        String saveDir = Paths.get("").toAbsolutePath().toString();
+
+        try (
+                Writer wallOutput = new OutputStreamWriter(new FileOutputStream(saveDir + "/" + "wall.timestamps.collapsed"));
+                Writer cpuOutput = new OutputStreamWriter(new FileOutputStream(saveDir + "/" + "cpu.timestamps.collapsed"));
+        ) {
+            FlightRecording flightRecording = FlightRecordingLoader.loadFile(file.toFile());
+
+            for (IEvent event : flightRecording.createView()) {
+                if (!validEvent(event)) {
+                    continue;
+                }
+
+                long startTimestamp = event.getStartTimestamp();
+                Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+                String stacktrace = fetchFlatStackTrace(event);
+
+                writeStackTrace(wallOutput, eventDate, stacktrace);
+                if (JfrParser.consumingCpu(event)) {
+                    writeStackTrace(cpuOutput, eventDate, stacktrace);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    private static void writeStackTrace(Writer wallOutput, Instant eventDate, String stacktrace) throws IOException {
+        wallOutput.write(OUTPUT_FORMAT.format(Date.from(eventDate)));
+        wallOutput.write(";");
+        wallOutput.write(stacktrace);
+        wallOutput.write(" 1\n");
     }
 
     private static void parseFile(Path file, Instant startDate, Instant endDate, String thread) {
@@ -147,8 +207,7 @@ public class JftToCollapseStacks {
     }
 
     private static Instant getCommonLogDate(String commonLogDate) throws ParseException {
-        SimpleDateFormat formatter = new SimpleDateFormat("dd/MMM/yyyy:HH:mm:ss Z", Locale.US);
-        Date parse = formatter.parse(commonLogDate);
+        Date parse = ACCESS_LOG_FORMAT.parse(commonLogDate);
         return Instant.ofEpochMilli(parse.getTime());
     }
 }
