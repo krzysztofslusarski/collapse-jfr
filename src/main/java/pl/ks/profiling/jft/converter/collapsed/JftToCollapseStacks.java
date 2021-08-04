@@ -22,6 +22,7 @@ import com.jrockit.mc.flightrecorder.FlightRecording;
 import com.jrockit.mc.flightrecorder.FlightRecordingLoader;
 import com.jrockit.mc.flightrecorder.internal.model.FLRThread;
 import com.jrockit.mc.flightrecorder.spi.IEvent;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
@@ -37,6 +38,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 public class JftToCollapseStacks {
     private static final Map<String, IntHolder> WALL_MAP = new HashMap<>();
@@ -72,7 +74,7 @@ public class JftToCollapseStacks {
             case "-d":
                 Files.walk(Paths.get(args[1]))
                         .filter(Files::isRegularFile)
-                        .filter(file -> file.getFileName().toString().endsWith(".jfr"))
+                        .filter(file -> file.getFileName().toString().toLowerCase().endsWith(".jfr") || file.getFileName().toString().toLowerCase().endsWith(".jfr.gz"))
                         .forEach(file1 -> parseFile(file1, startDate, endDate, threadLowerCase));
                 writeToFile();
                 break;
@@ -83,7 +85,7 @@ public class JftToCollapseStacks {
             case "-dt":
                 Files.walk(Paths.get(args[1]))
                         .filter(Files::isRegularFile)
-                        .filter(file -> file.getFileName().toString().endsWith(".jfr"))
+                        .filter(file -> file.getFileName().toString().toLowerCase().endsWith(".jfr") || file.getFileName().toString().toLowerCase().endsWith(".jfr.gz"))
                         .forEach(JftToCollapseStacks::writeCollapsedWithTimestamp);
                 break;
             case "-ft":
@@ -127,7 +129,7 @@ public class JftToCollapseStacks {
                 Writer wallOutput = new OutputStreamWriter(new FileOutputStream(saveDir + "/" + "wall.timestamps.collapsed"));
                 Writer cpuOutput = new OutputStreamWriter(new FileOutputStream(saveDir + "/" + "cpu.timestamps.collapsed"));
         ) {
-            FlightRecording flightRecording = FlightRecordingLoader.loadFile(file.toFile());
+            FlightRecording flightRecording = getFlightRecording(file);
 
             for (IEvent event : flightRecording.createView()) {
                 if (!validEvent(event)) {
@@ -149,19 +151,12 @@ public class JftToCollapseStacks {
 
     }
 
-    private static void writeStackTrace(Writer wallOutput, Instant eventDate, String stacktrace) throws IOException {
-        wallOutput.write(OUTPUT_FORMAT.format(Date.from(eventDate)));
-        wallOutput.write(";");
-        wallOutput.write(stacktrace);
-        wallOutput.write(" 1\n");
-    }
-
     private static void parseFile(Path file, Instant startDate, Instant endDate, String thread) {
         System.out.println("Input file: " + file.getFileName());
         System.out.println("Converting JFR to collapsed stack ...");
 
         try {
-            FlightRecording flightRecording = FlightRecordingLoader.loadFile(file.toFile());
+            FlightRecording flightRecording = getFlightRecording(file);
 
             for (IEvent event : flightRecording.createView()) {
                 if (!validEvent(event)) {
@@ -210,4 +205,19 @@ public class JftToCollapseStacks {
         Date parse = ACCESS_LOG_FORMAT.parse(commonLogDate);
         return Instant.ofEpochMilli(parse.getTime());
     }
+
+    private static FlightRecording getFlightRecording(Path file) throws IOException {
+        if (file.getFileName().toString().toLowerCase().endsWith(".jfr.gz")) {
+            return FlightRecordingLoader.loadStream(new GZIPInputStream(new FileInputStream(file.toFile())));
+        }
+        return FlightRecordingLoader.loadFile(file.toFile());
+    }
+
+    private static void writeStackTrace(Writer wallOutput, Instant eventDate, String stacktrace) throws IOException {
+        wallOutput.write(OUTPUT_FORMAT.format(Date.from(eventDate)));
+        wallOutput.write(";");
+        wallOutput.write(stacktrace);
+        wallOutput.write(" 1\n");
+    }
+
 }
