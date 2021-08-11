@@ -44,7 +44,7 @@ public class JftToCollapseStacks {
     private static final Map<String, IntHolder> WALL_MAP = new HashMap<>();
     private static final Map<String, IntHolder> CPU_MAP = new HashMap<>();
     private static final SimpleDateFormat ACCESS_LOG_FORMAT = new SimpleDateFormat("dd/MMM/yyyy:HH:mm:ss Z", Locale.US);
-    private static final SimpleDateFormat OUTPUT_FORMAT = new SimpleDateFormat("yyyy.MM.dd:HH:mm:ss", Locale.US);
+    private static final SimpleDateFormat OUTPUT_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
