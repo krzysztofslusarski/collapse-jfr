@@ -56,7 +56,7 @@ public class JftToCollapseStacks {
         String durationTimeMsStr = null;
 
         String thread = null;
-        if (args.length > 4) {
+        if (args.length >= 4) {
             commonLogDateStr = args[2];
             durationTimeMsStr = args[3];
         }
