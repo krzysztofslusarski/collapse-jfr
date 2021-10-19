@@ -22,10 +22,10 @@ import java.io.Writer;
 import java.util.Map;
 
 class CollapsedStackWriter {
-    static void saveFile(String dir, String fileName, Map<String, IntHolder> stackMap) throws IOException {
+    static void saveFile(String dir, String fileName, Map<String, LongHolder> stackMap) throws IOException {
         System.out.println("Writing to dir: " + dir +" with file name: " + fileName);
         try (Writer wallOutput = new OutputStreamWriter(new FileOutputStream(dir + "/" + fileName))) {
-            for (Map.Entry<String, IntHolder> holderEntry : stackMap.entrySet()) {
+            for (Map.Entry<String, LongHolder> holderEntry : stackMap.entrySet()) {
                 wallOutput.write(holderEntry.getKey());
                 wallOutput.write(" ");
                 wallOutput.write("" + holderEntry.getValue().getValue());

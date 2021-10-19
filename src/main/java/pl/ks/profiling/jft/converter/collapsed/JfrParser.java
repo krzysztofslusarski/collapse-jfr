@@ -15,28 +15,31 @@
  */
 package pl.ks.profiling.jft.converter.collapsed;
 
-import com.jrockit.mc.common.IMCFrame;
-import com.jrockit.mc.common.IMCMethod;
-import com.jrockit.mc.flightrecorder.internal.model.FLRStackTrace;
-import com.jrockit.mc.flightrecorder.internal.model.FLRThread;
-import com.jrockit.mc.flightrecorder.spi.IEvent;
 import java.util.List;
+import org.openjdk.jmc.common.IMCFrame;
+import org.openjdk.jmc.common.IMCMethod;
+import org.openjdk.jmc.common.IMCStackTrace;
+import org.openjdk.jmc.common.IMCThread;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.unit.StructContentType;
+import org.openjdk.jmc.flightrecorder.internal.EventArray;
 
 class JfrParser {
-    static boolean validEvent(IEvent event) {
-        return event.getEventType().getPath().startsWith("vm/prof/execution_sample") && (event.getValue("(stackTrace)") != null);
+    static boolean isAsyncWallEvent(EventArray event) {
+        if (event.getType() instanceof StructContentType) {
+            StructContentType structContentType = (StructContentType) event.getType();
+            return structContentType.getIdentifier().equals("jdk.ExecutionSample");
+        }
+        return false;
     }
 
-    static String fetchFlatStackTrace(IEvent event) {
-        FLRThread thread = (FLRThread) event.getValue("(thread)");
-
-        FLRStackTrace stackTrace = (FLRStackTrace) event.getValue("(stackTrace)");
-        List<? extends IMCFrame> frames = stackTrace.getFrames();
+    static String fetchFlatStackTrace(IItem event, IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor, IMemberAccessor<IMCThread, IItem> threadAccessor) {
+        String threadName = threadAccessor.getMember(event).getThreadName();
+        List<? extends IMCFrame> frames = stackTraceAccessor.getMember(event).getFrames();
 
         StringBuilder builder = new StringBuilder();
-        if (thread != null && thread.getName() != null) {
-            builder.append(thread.getName()).append(";");
-        }
+        builder.append(threadName).append(";");
         for (int i = frames.size() - 1; i >= 0; i--) {
             IMCFrame frame = frames.get(i);
             IMCMethod method = frame.getMethod();
@@ -45,13 +48,13 @@ class JfrParser {
                 builder.append(";");
             }
 
-            String packageName = method.getPackageName().replace(".", "/");
+            String packageName = method.getType().getPackage().getName().replace(".", "/");
             if (packageName.length() > 0) {
                 builder.append(packageName);
                 builder.append("/");
             }
 
-            String className = method.getClassName();
+            String className = method.getType().getTypeName();
             if (className.length() > 0) {
                 builder.append(className);
                 builder.append(".");
@@ -61,9 +64,5 @@ class JfrParser {
         }
 
         return builder.toString();
-    }
-
-    static boolean consumingCpu(IEvent event) {
-        return "STATE_RUNNABLE".equals(String.valueOf(event.getValue("state")));
     }
 }
