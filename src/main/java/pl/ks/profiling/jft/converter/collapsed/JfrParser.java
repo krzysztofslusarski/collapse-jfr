@@ -48,13 +48,17 @@ class JfrParser {
                 builder.append(";");
             }
 
-            String packageName = method.getType().getPackage().getName().replace(".", "/");
-            if (packageName.length() > 0) {
-                builder.append(packageName);
-                builder.append("/");
+            try {
+                String packageName = method.getType().getPackage().getName() == null ? "" : method.getType().getPackage().getName().replace(".", "/");
+                if (packageName.length() > 0) {
+                    builder.append(packageName);
+                    builder.append("/");
+                }
+            } catch (RuntimeException e) {
+                e.printStackTrace();
+                throw e;
             }
-
-            String className = method.getType().getTypeName();
+            String className = method.getType().getTypeName().replace(".", "/");
             if (className.length() > 0) {
                 builder.append(className);
                 builder.append(".");
