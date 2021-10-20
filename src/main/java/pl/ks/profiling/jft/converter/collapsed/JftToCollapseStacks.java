@@ -231,8 +231,6 @@ public class JftToCollapseStacks {
             EventArrays flightRecording = getFlightRecording(file);
 
             for (EventArray eventArray : flightRecording.getArrays()) {
-                System.out.println(eventArray.getType());
-                System.out.println(eventArray.getEvents().length);
                 if (isAsyncWallEvent(eventArray)) {
                     processWallEvent(startDate, endDate, thread, eventArray);
                 } else if (isLockEvent(eventArray)) {
