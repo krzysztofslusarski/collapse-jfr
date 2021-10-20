@@ -26,6 +26,22 @@ import org.openjdk.jmc.common.unit.StructContentType;
 import org.openjdk.jmc.flightrecorder.internal.EventArray;
 
 class JfrParser {
+    static boolean isAsyncAllocNewTLABEvent(EventArray event) {
+        if (event.getType() instanceof StructContentType) {
+            StructContentType structContentType = (StructContentType) event.getType();
+            return structContentType.getIdentifier().equals("jdk.ObjectAllocationInNewTLAB");
+        }
+        return false;
+    }
+
+    static boolean isAsyncAllocOutsideTLABEvent(EventArray event) {
+        if (event.getType() instanceof StructContentType) {
+            StructContentType structContentType = (StructContentType) event.getType();
+            return structContentType.getIdentifier().equals("jdk.ObjectAllocationOutsideTLAB");
+        }
+        return false;
+    }
+
     static boolean isAsyncWallEvent(EventArray event) {
         if (event.getType() instanceof StructContentType) {
             StructContentType structContentType = (StructContentType) event.getType();

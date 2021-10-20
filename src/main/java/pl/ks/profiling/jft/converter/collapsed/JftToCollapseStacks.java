@@ -16,6 +16,8 @@
 package pl.ks.profiling.jft.converter.collapsed;
 
 import static pl.ks.profiling.jft.converter.collapsed.JfrParser.fetchFlatStackTrace;
+import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncAllocNewTLABEvent;
+import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncAllocOutsideTLABEvent;
 import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncWallEvent;
 
 import java.io.FileOutputStream;
@@ -50,6 +52,8 @@ import org.openjdk.jmc.flightrecorder.internal.FlightRecordingLoader;
 public class JftToCollapseStacks {
     private static final Map<String, LongHolder> WALL_MAP = new HashMap<>();
     private static final Map<String, LongHolder> CPU_MAP = new HashMap<>();
+    private static final Map<String, LongHolder> ALLOC_COUNT_MAP = new HashMap<>();
+    private static final Map<String, LongHolder> ALLOC_SIZE_MAP = new HashMap<>();
     private static final SimpleDateFormat ACCESS_LOG_FORMAT = new SimpleDateFormat("dd/MMM/yyyy:HH:mm:ss Z", Locale.US);
     private static final SimpleDateFormat OUTPUT_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
 
@@ -139,28 +143,31 @@ public class JftToCollapseStacks {
             EventArrays flightRecording = getFlightRecording(file);
 
             for (EventArray eventArray : flightRecording.getArrays()) {
-                if (!isAsyncWallEvent(eventArray)) {
-                    continue;
-                }
-                IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
-                IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
-                IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
-                IMemberAccessor<String, IItem> stateAccessor = findStateAccessor(eventArray);
-                for (IItem event : eventArray.getEvents()) {
-                    long startTimestamp = startTimeAccessor.getMember(event).longValue();
-                    Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
-                    String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor);
-                    writeStackTrace(wallOutput, eventDate, stacktrace);
-                    String state = stateAccessor.getMember(event);
-                    if (isConsumingCpu(state)) {
-                        writeStackTrace(cpuOutput, eventDate, stacktrace);
-                    }
+                if (isAsyncWallEvent(eventArray)) {
+                    processWallEventWithTimeStamps(wallOutput, cpuOutput, eventArray);
                 }
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
 
+    }
+
+    private static void processWallEventWithTimeStamps(Writer wallOutput, Writer cpuOutput, EventArray eventArray) throws IOException {
+        IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
+        IMemberAccessor<String, IItem> stateAccessor = findStateAccessor(eventArray);
+        for (IItem event : eventArray.getEvents()) {
+            long startTimestamp = startTimeAccessor.getMember(event).longValue();
+            Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+            String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor);
+            writeStackTrace(wallOutput, eventDate, stacktrace);
+            String state = stateAccessor.getMember(event);
+            if (isConsumingCpu(state)) {
+                writeStackTrace(cpuOutput, eventDate, stacktrace);
+            }
+        }
     }
 
     private static void parseFile(Path file, Instant startDate, Instant endDate, String thread) {
@@ -173,39 +180,71 @@ public class JftToCollapseStacks {
             for (EventArray eventArray : flightRecording.getArrays()) {
                 System.out.println(eventArray.getType());
                 System.out.println(eventArray.getEvents().length);
-                if (!isAsyncWallEvent(eventArray)) {
-                    continue;
-                }
-                IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
-                IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
-                IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
-                IMemberAccessor<String, IItem> stateAccessor = findStateAccessor(eventArray);
-
-                for (IItem event : eventArray.getEvents()) {
-                    if (endDate != null && startDate != null) {
-                        long startTimestamp = startTimeAccessor.getMember(event).longValue();
-                        Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
-                        if (eventDate.isBefore(startDate) || eventDate.isAfter(endDate)) {
-                            continue;
-                        }
-                    }
-
-                    if (thread != null) {
-                        String threadName = threadAccessor.getMember(event).getThreadName().toLowerCase();
-                        if (!thread.equals(threadName)) {
-                            continue;
-                        }
-                    }
-
-                    String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor);
-                    addToWallMap(stacktrace);
-                    if (stateAccessor != null) {
-                        addToCpuMapIfConsumingCpu(stateAccessor.getMember(event), stacktrace);
-                    }
+                if (isAsyncWallEvent(eventArray)) {
+                    processWallEvent(startDate, endDate, thread, eventArray);
+                } else if (isAsyncAllocNewTLABEvent(eventArray) || isAsyncAllocOutsideTLABEvent(eventArray)) {
+                    processAllockEvent(startDate, endDate, thread, eventArray);
                 }
             }
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private static void processAllockEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray) {
+        IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
+        IMemberAccessor<String, IItem> stateAccessor = findStateAccessor(eventArray);
+
+        for (IItem event : eventArray.getEvents()) {
+            if (endDate != null && startDate != null) {
+                long startTimestamp = startTimeAccessor.getMember(event).longValue();
+                Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+                if (eventDate.isBefore(startDate) || eventDate.isAfter(endDate)) {
+                    continue;
+                }
+            }
+
+            if (thread != null) {
+                String threadName = threadAccessor.getMember(event).getThreadName().toLowerCase();
+                if (!thread.equals(threadName)) {
+                    continue;
+                }
+            }
+
+            String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor);
+        }
+    }
+
+
+    private static void processWallEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray) {
+        IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
+        IMemberAccessor<String, IItem> stateAccessor = findStateAccessor(eventArray);
+
+        for (IItem event : eventArray.getEvents()) {
+            if (endDate != null && startDate != null) {
+                long startTimestamp = startTimeAccessor.getMember(event).longValue();
+                Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+                if (eventDate.isBefore(startDate) || eventDate.isAfter(endDate)) {
+                    continue;
+                }
+            }
+
+            if (thread != null) {
+                String threadName = threadAccessor.getMember(event).getThreadName().toLowerCase();
+                if (!thread.equals(threadName)) {
+                    continue;
+                }
+            }
+
+            String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor);
+            addToWallMap(stacktrace);
+            if (stateAccessor != null) {
+                addToCpuMapIfConsumingCpu(stateAccessor.getMember(event), stacktrace);
+            }
         }
     }
 
