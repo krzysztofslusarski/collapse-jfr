@@ -1,21 +1,13 @@
 # collapse-jfr
-This application is a converter from JFR file produced by **Async-profiler** in **wall-clock** mode to 2 collapsed stack files:
+This application is a converter from JFR file produced by **Async-profiler** in **wall-clock** mode to collapsed stack files:
 * CPU collapsed stack
 * Wall-clock collapsed stack
+* Lock collapsed stack (Async-profiler 2.0+)
+* Alloc count collapsed stack (Async-profiler 2.0+)
+* Alloc size collapsed stack (Async-profiler 2.0+)
 
 ## Async-profiler version
-This tool works with Async-profiler in 1.* version. I will release new project for 2.*.
-
-## How to compile
-Unfortunately this application depends on Oracle JDK 8 jars, which are not in maven repository, so you have to build your version yourself.
-
-* Clone source code
-* Download Oracle JDK 8u221 - if you have different update following files may have different version
-* Copy following files to oracle dir in cloned project:
-  * `jdk1.8.0_221/lib/missioncontrol/plugins/com.jrockit.mc.common_5.5.2.174165.jar`
-  * `jdk1.8.0_221/lib/missioncontrol/plugins/com.jrockit.mc.flightrecorder_5.5.2.174165.jar`
-* Run `mvn clean package` with `JAVA_HOME` set to JDK 8
-* Target jar: `target\collapse-jfr-full.jar`
+This tool works with Async-profiler in 1.* and 2.* versions. It works with the Async-profiler in multiple event mode, like `wall,alloc,lock`.
 
 ## How to run
 `java -jar collapse-jfr-full.jar -d <dir>` - will merge all files with .jfr extensions to cpu/wall collapsed stack files
@@ -24,6 +16,9 @@ Unfortunately this application depends on Oracle JDK 8 jars, which are not in ma
 Output files:
 * `cpu.collapsed`
 * `wall.collapsed`
+* `lock.collapsed` - if lock events are present
+* `alloc.count.collapsed` - if alloc events are present
+* `alloc.size.collapsed` - if alloc events are present
 
 will be created in the directory you started process.
 
@@ -51,6 +46,3 @@ You can run:
 ```
 java -jar collapse-jfr-full.jar -d . "17/Sep/2020:13:03:23 +0200" 23513 http-nio-8080-exec-250
 ```
-
-
-  

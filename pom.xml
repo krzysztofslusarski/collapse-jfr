@@ -14,18 +14,9 @@
 
     <dependencies>
         <dependency>
-            <groupId>oracle-deps</groupId>
-            <artifactId>mc-common</artifactId>
-            <version>not-important</version>
-            <scope>system</scope>
-            <systemPath>${pom.basedir}/oracle/com.jrockit.mc.common_5.5.2.174165.jar</systemPath>
-        </dependency>
-        <dependency>
-            <groupId>oracle-deps</groupId>
-            <artifactId>mc-flightrecorder</artifactId>
-            <version>not-important</version>
-            <scope>system</scope>
-            <systemPath>${pom.basedir}/oracle/com.jrockit.mc.flightrecorder_5.5.2.174165.jar</systemPath>
+            <groupId>org.openjdk.jmc</groupId>
+            <artifactId>flightrecorder</artifactId>
+            <version>8.1.0</version>
         </dependency>
     </dependencies>
 

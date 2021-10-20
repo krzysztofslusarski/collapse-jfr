@@ -15,14 +15,18 @@
  */
 package pl.ks.profiling.jft.converter.collapsed;
 
-class IntHolder {
-    private int value;
+class LongHolder {
+    private long value;
 
     void increment() {
         value++;
     }
 
-    int getValue() {
+    void addValue(long value) {
+        this.value += value;
+    }
+
+    long getValue() {
         return value;
     }
 }

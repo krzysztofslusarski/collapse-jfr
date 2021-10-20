@@ -15,28 +15,60 @@
  */
 package pl.ks.profiling.jft.converter.collapsed;
 
-import com.jrockit.mc.common.IMCFrame;
-import com.jrockit.mc.common.IMCMethod;
-import com.jrockit.mc.flightrecorder.internal.model.FLRStackTrace;
-import com.jrockit.mc.flightrecorder.internal.model.FLRThread;
-import com.jrockit.mc.flightrecorder.spi.IEvent;
 import java.util.List;
+import java.util.Map;
+import org.openjdk.jmc.common.IDescribable;
+import org.openjdk.jmc.common.IMCFrame;
+import org.openjdk.jmc.common.IMCMethod;
+import org.openjdk.jmc.common.IMCStackTrace;
+import org.openjdk.jmc.common.IMCThread;
+import org.openjdk.jmc.common.IMCType;
+import org.openjdk.jmc.common.item.IAccessorKey;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.common.unit.StructContentType;
+import org.openjdk.jmc.flightrecorder.internal.EventArray;
 
 class JfrParser {
-    static boolean validEvent(IEvent event) {
-        return event.getEventType().getPath().startsWith("vm/prof/execution_sample") && (event.getValue("(stackTrace)") != null);
+    static boolean isAsyncAllocNewTLABEvent(EventArray event) {
+        if (event.getType() instanceof StructContentType) {
+            StructContentType structContentType = (StructContentType) event.getType();
+            return structContentType.getIdentifier().equals("jdk.ObjectAllocationInNewTLAB");
+        }
+        return false;
     }
 
-    static String fetchFlatStackTrace(IEvent event) {
-        FLRThread thread = (FLRThread) event.getValue("(thread)");
+    static boolean isLockEvent(EventArray event) {
+        if (event.getType() instanceof StructContentType) {
+            StructContentType structContentType = (StructContentType) event.getType();
+            return structContentType.getIdentifier().equals("jdk.JavaMonitorEnter");
+        }
+        return false;
+    }
 
-        FLRStackTrace stackTrace = (FLRStackTrace) event.getValue("(stackTrace)");
-        List<? extends IMCFrame> frames = stackTrace.getFrames();
+    static boolean isAsyncAllocOutsideTLABEvent(EventArray event) {
+        if (event.getType() instanceof StructContentType) {
+            StructContentType structContentType = (StructContentType) event.getType();
+            return structContentType.getIdentifier().equals("jdk.ObjectAllocationOutsideTLAB");
+        }
+        return false;
+    }
+
+    static boolean isAsyncWallEvent(EventArray event) {
+        if (event.getType() instanceof StructContentType) {
+            StructContentType structContentType = (StructContentType) event.getType();
+            return structContentType.getIdentifier().equals("jdk.ExecutionSample");
+        }
+        return false;
+    }
+
+    static String fetchFlatStackTrace(IItem event, IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor, IMemberAccessor<IMCThread, IItem> threadAccessor) {
+        String threadName = threadAccessor.getMember(event).getThreadName();
+        List<? extends IMCFrame> frames = stackTraceAccessor.getMember(event).getFrames();
 
         StringBuilder builder = new StringBuilder();
-        if (thread != null && thread.getName() != null) {
-            builder.append(thread.getName()).append(";");
-        }
+        builder.append(threadName).append(";");
         for (int i = frames.size() - 1; i >= 0; i--) {
             IMCFrame frame = frames.get(i);
             IMCMethod method = frame.getMethod();
@@ -45,13 +77,17 @@ class JfrParser {
                 builder.append(";");
             }
 
-            String packageName = method.getPackageName().replace(".", "/");
-            if (packageName.length() > 0) {
-                builder.append(packageName);
-                builder.append("/");
+            try {
+                String packageName = method.getType().getPackage().getName() == null ? "" : method.getType().getPackage().getName().replace(".", "/");
+                if (packageName.length() > 0) {
+                    builder.append(packageName);
+                    builder.append("/");
+                }
+            } catch (RuntimeException e) {
+                e.printStackTrace();
+                throw e;
             }
-
-            String className = method.getClassName();
+            String className = method.getType().getTypeName().replace(".", "/");
             if (className.length() > 0) {
                 builder.append(className);
                 builder.append(".");
@@ -63,7 +99,43 @@ class JfrParser {
         return builder.toString();
     }
 
-    static boolean consumingCpu(IEvent event) {
-        return "STATE_RUNNABLE".equals(String.valueOf(event.getValue("state")));
+    static IMemberAccessor<String, IItem> findStateAccessor(EventArray eventArray) {
+        for (Map.Entry<IAccessorKey<?>, ? extends IDescribable> accessorKey : eventArray.getType().getAccessorKeys().entrySet()) {
+            if (accessorKey.getKey().getIdentifier().equals("state")) {
+                return (IMemberAccessor<String, IItem>) eventArray.getType().getAccessor(accessorKey.getKey());
+            }
+        }
+        return null;
+    }
+
+    static IMemberAccessor<IMCType, IItem> findMonitorClassAccessor(EventArray eventArray) {
+        for (Map.Entry<IAccessorKey<?>, ? extends IDescribable> accessorKey : eventArray.getType().getAccessorKeys().entrySet()) {
+            if (accessorKey.getKey().getIdentifier().equals("monitorClass")) {
+                return (IMemberAccessor<IMCType, IItem>) eventArray.getType().getAccessor(accessorKey.getKey());
+            }
+        }
+        return null;
+    }
+
+    static IMemberAccessor<IQuantity, IItem> findAllocSizeAccessor(EventArray eventArray) {
+        for (Map.Entry<IAccessorKey<?>, ? extends IDescribable> accessorKey : eventArray.getType().getAccessorKeys().entrySet()) {
+            if (accessorKey.getKey().getIdentifier().equals("allocationSize")) {
+                return (IMemberAccessor<IQuantity, IItem>) eventArray.getType().getAccessor(accessorKey.getKey());
+            }
+        }
+        return null;
+    }
+
+    static IMemberAccessor<IMCType, IItem> findObjectClassAccessor(EventArray eventArray) {
+        for (Map.Entry<IAccessorKey<?>, ? extends IDescribable> accessorKey : eventArray.getType().getAccessorKeys().entrySet()) {
+            if (accessorKey.getKey().getIdentifier().equals("objectClass")) {
+                return (IMemberAccessor<IMCType, IItem>) eventArray.getType().getAccessor(accessorKey.getKey());
+            }
+        }
+        return null;
+    }
+
+    static boolean isConsumingCpu(String state) {
+        return "STATE_RUNNABLE".equals(state);
     }
 }
