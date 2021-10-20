@@ -19,6 +19,7 @@ import static pl.ks.profiling.jft.converter.collapsed.JfrParser.fetchFlatStackTr
 import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncAllocNewTLABEvent;
 import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncAllocOutsideTLABEvent;
 import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncWallEvent;
+import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isLockEvent;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -36,10 +37,10 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
-import org.openjdk.jmc.common.IDescribable;
+import java.util.zip.GZIPOutputStream;
 import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.IMCThread;
-import org.openjdk.jmc.common.item.IAccessorKey;
+import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
@@ -54,6 +55,7 @@ public class JftToCollapseStacks {
     private static final Map<String, LongHolder> CPU_MAP = new HashMap<>();
     private static final Map<String, LongHolder> ALLOC_COUNT_MAP = new HashMap<>();
     private static final Map<String, LongHolder> ALLOC_SIZE_MAP = new HashMap<>();
+    private static final Map<String, LongHolder> MONITOR_MAP = new HashMap<>();
     private static final SimpleDateFormat ACCESS_LOG_FORMAT = new SimpleDateFormat("dd/MMM/yyyy:HH:mm:ss Z", Locale.US);
     private static final SimpleDateFormat OUTPUT_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
 
@@ -110,15 +112,24 @@ public class JftToCollapseStacks {
         String saveDir = Paths.get("").toAbsolutePath().toString();
         CollapsedStackWriter.saveFile(saveDir, "wall.collapsed", WALL_MAP);
         CollapsedStackWriter.saveFile(saveDir, "cpu.collapsed", CPU_MAP);
+        if (ALLOC_COUNT_MAP.size() > 0) {
+            CollapsedStackWriter.saveFile(saveDir, "alloc.count.collapsed", ALLOC_COUNT_MAP);
+        }
+        if (ALLOC_SIZE_MAP.size() > 0) {
+            CollapsedStackWriter.saveFile(saveDir, "alloc.size.collapsed", ALLOC_SIZE_MAP);
+        }
+        if (MONITOR_MAP.size() > 0) {
+            CollapsedStackWriter.saveFile(saveDir, "lock.collapsed", MONITOR_MAP);
+        }
         System.out.println("Done");
     }
 
     private static void printInfo() {
         System.out.println("Unrecognized options, proper usage:");
-        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> - will merge all files with .jfr extensions to cpu/wall collapsed stack files");
-        System.out.println("  java -jar collapse-jfr-full.jar -f <file> - will convert one file to cpu/wall collapsed stack files");
-        System.out.println("  java -jar collapse-jfr-full.jar -dt <dir> - will merge all files with .jfr extensions to cpu/wall collapsed stack files (with timestamp)");
-        System.out.println("  java -jar collapse-jfr-full.jar -ft <file> - will convert one file to cpu/wall collapsed stack files (with timestamp)");
+        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> - will merge all files with .jfr extensions to cpu/wall/lock/alloc collapsed stack files");
+        System.out.println("  java -jar collapse-jfr-full.jar -f <file> - will convert one file to cpu/wall/lock/alloc collapsed stack files");
+        System.out.println("  java -jar collapse-jfr-full.jar -dt <dir> - will merge all files with .jfr extensions to cpu/wall/lock/alloc collapsed stack files (with timestamp)");
+        System.out.println("  java -jar collapse-jfr-full.jar -ft <file> - will convert one file to cpu/wall/lock/alloc collapsed stack files (with timestamp)");
         System.out.println("You can add end date in \"Common Log Format\" and duration in ms to filter by time.");
         System.out.println("It is designed to use with access log files. Usage:");
         System.out.println("  java -jar collapse-jfr-full.jar -d <dir> <end date> <duration>");
@@ -137,14 +148,23 @@ public class JftToCollapseStacks {
         String saveDir = Paths.get("").toAbsolutePath().toString();
 
         try (
-                Writer wallOutput = new OutputStreamWriter(new FileOutputStream(saveDir + "/" + "wall.timestamps.collapsed"));
-                Writer cpuOutput = new OutputStreamWriter(new FileOutputStream(saveDir + "/" + "cpu.timestamps.collapsed"));
+                Writer wallOutput = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(saveDir + "/" + "wall.timestamps.collapsed.gz")));
+                Writer cpuOutput = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(saveDir + "/" + "cpu.timestamps.collapsed.gz")));
+                Writer monitorOutput = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(saveDir + "/" + "lock.timestamps.collapsed.gz")));
+                Writer allocCountOutput = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(saveDir + "/" + "alloc.count.timestamps.collapsed.gz")));
+                Writer allocSizeOutput = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(saveDir + "/" + "alloc.size.timestamps.collapsed.gz")));
         ) {
             EventArrays flightRecording = getFlightRecording(file);
 
             for (EventArray eventArray : flightRecording.getArrays()) {
                 if (isAsyncWallEvent(eventArray)) {
                     processWallEventWithTimeStamps(wallOutput, cpuOutput, eventArray);
+                } else if (isLockEvent(eventArray)) {
+                    processLockEventWithTimeStamps(monitorOutput, eventArray);
+                } else if (isAsyncAllocNewTLABEvent(eventArray)) {
+                    processAllocEventWithTimeStamps(allocCountOutput, allocSizeOutput, eventArray, false);
+                } else if (isAsyncAllocOutsideTLABEvent(eventArray)) {
+                    processAllocEventWithTimeStamps(allocCountOutput, allocSizeOutput, eventArray, true);
                 }
             }
         } catch (Exception e) {
@@ -153,18 +173,51 @@ public class JftToCollapseStacks {
 
     }
 
+    private static void processAllocEventWithTimeStamps(Writer allocCountOutput, Writer allocSizeOutput, EventArray eventArray, boolean outsideTlab) throws IOException {
+        IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
+        IMemberAccessor<IQuantity, IItem> allocationSizeAccessor = JfrParser.findAllocSizeAccessor(eventArray);
+        IMemberAccessor<IMCType, IItem> objectClassAccessor = JfrParser.findObjectClassAccessor(eventArray);
+
+        for (IItem event : eventArray.getEvents()) {
+            long startTimestamp = startTimeAccessor.getMember(event).longValue();
+            Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+            String objectClass = objectClassAccessor.getMember(event).getFullName();
+            String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor) + ";" + objectClass + (outsideTlab ? "_[i]" : "_[k]");
+            long size = allocationSizeAccessor.getMember(event).longValue();
+            writeStackTrace(allocCountOutput, eventDate, stacktrace);
+            writeStackTrace(allocSizeOutput, eventDate, stacktrace, size);
+        }
+    }
+
+    private static void processLockEventWithTimeStamps(Writer monitorOutput, EventArray eventArray) throws IOException {
+        IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCType, IItem> monitorClassAccessor = JfrParser.findMonitorClassAccessor(eventArray);
+
+        for (IItem event : eventArray.getEvents()) {
+            long startTimestamp = startTimeAccessor.getMember(event).longValue();
+            Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+            String monitorClass = monitorClassAccessor.getMember(event).getFullName();
+            String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor) + ";" + monitorClass + "_[i]";
+            writeStackTrace(monitorOutput, eventDate, stacktrace);
+        }
+    }
+
     private static void processWallEventWithTimeStamps(Writer wallOutput, Writer cpuOutput, EventArray eventArray) throws IOException {
         IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
         IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
         IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
-        IMemberAccessor<String, IItem> stateAccessor = findStateAccessor(eventArray);
+        IMemberAccessor<String, IItem> stateAccessor = JfrParser.findStateAccessor(eventArray);
         for (IItem event : eventArray.getEvents()) {
             long startTimestamp = startTimeAccessor.getMember(event).longValue();
             Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
             String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor);
             writeStackTrace(wallOutput, eventDate, stacktrace);
             String state = stateAccessor.getMember(event);
-            if (isConsumingCpu(state)) {
+            if (JfrParser.isConsumingCpu(state)) {
                 writeStackTrace(cpuOutput, eventDate, stacktrace);
             }
         }
@@ -182,8 +235,12 @@ public class JftToCollapseStacks {
                 System.out.println(eventArray.getEvents().length);
                 if (isAsyncWallEvent(eventArray)) {
                     processWallEvent(startDate, endDate, thread, eventArray);
-                } else if (isAsyncAllocNewTLABEvent(eventArray) || isAsyncAllocOutsideTLABEvent(eventArray)) {
-                    processAllockEvent(startDate, endDate, thread, eventArray);
+                } else if (isLockEvent(eventArray)) {
+                    processLockEvent(startDate, endDate, thread, eventArray);
+                } else if (isAsyncAllocNewTLABEvent(eventArray)) {
+                    processAllocEvent(startDate, endDate, thread, eventArray, false);
+                } else if (isAsyncAllocOutsideTLABEvent(eventArray)) {
+                    processAllocEvent(startDate, endDate, thread, eventArray, true);
                 }
             }
         } catch (Exception e) {
@@ -191,11 +248,40 @@ public class JftToCollapseStacks {
         }
     }
 
-    private static void processAllockEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray) {
+    private static void processAllocEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray, boolean outsideTlab) {
         IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
         IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
         IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
-        IMemberAccessor<String, IItem> stateAccessor = findStateAccessor(eventArray);
+        IMemberAccessor<IQuantity, IItem> allocationSizeAccessor = JfrParser.findAllocSizeAccessor(eventArray);
+        IMemberAccessor<IMCType, IItem> objectClassAccessor = JfrParser.findObjectClassAccessor(eventArray);
+
+        for (IItem event : eventArray.getEvents()) {
+            if (endDate != null && startDate != null) {
+                long startTimestamp = startTimeAccessor.getMember(event).longValue();
+                Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+                if (eventDate.isBefore(startDate) || eventDate.isAfter(endDate)) {
+                    continue;
+                }
+            }
+
+            if (thread != null) {
+                String threadName = threadAccessor.getMember(event).getThreadName().toLowerCase();
+                if (!thread.equals(threadName)) {
+                    continue;
+                }
+            }
+            String objectClass = objectClassAccessor.getMember(event).getFullName();
+            String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor) + ";" + objectClass + (outsideTlab ? "_[i]" : "_[k]");
+            long size = allocationSizeAccessor.getMember(event).longValue();
+            addToAllocMaps(stacktrace, size);
+        }
+    }
+
+    private static void processLockEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray) {
+        IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
+        IMemberAccessor<IMCType, IItem> monitorClassAccessor = JfrParser.findMonitorClassAccessor(eventArray);
 
         for (IItem event : eventArray.getEvents()) {
             if (endDate != null && startDate != null) {
@@ -213,16 +299,17 @@ public class JftToCollapseStacks {
                 }
             }
 
-            String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor);
+            String monitorClass = monitorClassAccessor.getMember(event).getFullName();
+            String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor) + ";" + monitorClass + "_[i]";
+            addToMonitorMap(stacktrace);
         }
     }
-
 
     private static void processWallEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray) {
         IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
         IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
         IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
-        IMemberAccessor<String, IItem> stateAccessor = findStateAccessor(eventArray);
+        IMemberAccessor<String, IItem> stateAccessor = JfrParser.findStateAccessor(eventArray);
 
         for (IItem event : eventArray.getEvents()) {
             if (endDate != null && startDate != null) {
@@ -248,23 +335,10 @@ public class JftToCollapseStacks {
         }
     }
 
-    private static IMemberAccessor<String, IItem> findStateAccessor(EventArray eventArray) {
-        for (Map.Entry<IAccessorKey<?>, ? extends IDescribable> accessorKey : eventArray.getType().getAccessorKeys().entrySet()) {
-            if (accessorKey.getKey().getIdentifier().equals("state")) {
-                return (IMemberAccessor<String, IItem>) eventArray.getType().getAccessor(accessorKey.getKey());
-            }
-        }
-        return null;
-    }
-
     private static void addToCpuMapIfConsumingCpu(String state, String stacktrace) {
-        if (isConsumingCpu(state)) {
+        if (JfrParser.isConsumingCpu(state)) {
             addToCpuMap(stacktrace);
         }
-    }
-
-    private static boolean isConsumingCpu(String state) {
-        return "STATE_RUNNABLE".equals(state);
     }
 
     private static void addToCpuMap(String stacktrace) {
@@ -273,6 +347,15 @@ public class JftToCollapseStacks {
 
     private static void addToWallMap(String stacktrace) {
         WALL_MAP.computeIfAbsent(stacktrace, stack -> new LongHolder()).increment();
+    }
+
+    private static void addToMonitorMap(String stacktrace) {
+        MONITOR_MAP.computeIfAbsent(stacktrace, stack -> new LongHolder()).increment();
+    }
+
+    private static void addToAllocMaps(String stacktrace, long size) {
+        ALLOC_COUNT_MAP.computeIfAbsent(stacktrace, stack -> new LongHolder()).increment();
+        ALLOC_SIZE_MAP.computeIfAbsent(stacktrace, stack -> new LongHolder()).addValue(size);
     }
 
     private static Instant getCommonLogDate(String commonLogDate) throws ParseException {
@@ -287,11 +370,14 @@ public class JftToCollapseStacks {
         return FlightRecordingLoader.loadStream(Files.newInputStream(file), false, false);
     }
 
-    private static void writeStackTrace(Writer wallOutput, Instant eventDate, String stacktrace) throws IOException {
-        wallOutput.write(OUTPUT_FORMAT.format(Date.from(eventDate)));
-        wallOutput.write(";");
-        wallOutput.write(stacktrace);
-        wallOutput.write(" 1\n");
+    private static void writeStackTrace(Writer output, Instant eventDate, String stacktrace) throws IOException {
+        writeStackTrace(output, eventDate, stacktrace, 1);
     }
 
+    private static void writeStackTrace(Writer output, Instant eventDate, String stacktrace, long count) throws IOException {
+        output.write(OUTPUT_FORMAT.format(Date.from(eventDate)));
+        output.write(";");
+        output.write(stacktrace);
+        output.write(" " + count + "\n");
+    }
 }

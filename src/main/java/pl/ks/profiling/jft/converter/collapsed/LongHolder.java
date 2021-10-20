@@ -22,6 +22,10 @@ class LongHolder {
         value++;
     }
 
+    void addValue(long value) {
+        this.value += value;
+    }
+
     long getValue() {
         return value;
     }

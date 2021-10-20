@@ -20,11 +20,12 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.util.Map;
+import java.util.zip.GZIPOutputStream;
 
 class CollapsedStackWriter {
     static void saveFile(String dir, String fileName, Map<String, LongHolder> stackMap) throws IOException {
         System.out.println("Writing to dir: " + dir +" with file name: " + fileName);
-        try (Writer wallOutput = new OutputStreamWriter(new FileOutputStream(dir + "/" + fileName))) {
+        try (Writer wallOutput = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(dir + "/" + fileName + ".gz")))) {
             for (Map.Entry<String, LongHolder> holderEntry : stackMap.entrySet()) {
                 wallOutput.write(holderEntry.getKey());
                 wallOutput.write(" ");
