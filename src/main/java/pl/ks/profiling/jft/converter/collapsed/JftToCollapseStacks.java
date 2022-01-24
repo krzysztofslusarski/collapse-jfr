@@ -15,11 +15,17 @@
  */
 package pl.ks.profiling.jft.converter.collapsed;
 
-import static pl.ks.profiling.jft.converter.collapsed.JfrParser.fetchFlatStackTrace;
-import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncAllocNewTLABEvent;
-import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncAllocOutsideTLABEvent;
-import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncWallEvent;
-import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isLockEvent;
+import org.openjdk.jmc.common.IMCStackTrace;
+import org.openjdk.jmc.common.IMCThread;
+import org.openjdk.jmc.common.IMCType;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.flightrecorder.CouldNotLoadRecordingException;
+import org.openjdk.jmc.flightrecorder.JfrAttributes;
+import org.openjdk.jmc.flightrecorder.internal.EventArray;
+import org.openjdk.jmc.flightrecorder.internal.EventArrays;
+import org.openjdk.jmc.flightrecorder.internal.FlightRecordingLoader;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -36,19 +42,16 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
-import org.openjdk.jmc.common.IMCStackTrace;
-import org.openjdk.jmc.common.IMCThread;
-import org.openjdk.jmc.common.IMCType;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.flightrecorder.CouldNotLoadRecordingException;
-import org.openjdk.jmc.flightrecorder.JfrAttributes;
-import org.openjdk.jmc.flightrecorder.internal.EventArray;
-import org.openjdk.jmc.flightrecorder.internal.EventArrays;
-import org.openjdk.jmc.flightrecorder.internal.FlightRecordingLoader;
+
+import static pl.ks.profiling.jft.converter.collapsed.JfrParser.fetchFlatStackTrace;
+import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncAllocNewTLABEvent;
+import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncAllocOutsideTLABEvent;
+import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isAsyncWallEvent;
+import static pl.ks.profiling.jft.converter.collapsed.JfrParser.isLockEvent;
 
 public class JftToCollapseStacks {
     private static final Map<String, LongHolder> WALL_MAP = new HashMap<>();
@@ -65,46 +68,70 @@ public class JftToCollapseStacks {
             System.exit(-1);
         }
 
-        String commonLogDateStr = null;
-        String durationTimeMsStr = null;
+        Arguments arguments = ArgumentsParser.parse(args);
+        StartEndDate startEndDate = calculateDates(arguments, getPaths(arguments));
+        String threadLowerCase = arguments.thread == null ? null : arguments.thread.trim().toLowerCase();
 
-        String thread = null;
-        if (args.length >= 4) {
-            commonLogDateStr = args[2];
-            durationTimeMsStr = args[3];
+        if (arguments.timestampFeature == TimestampFeature.DISABLED) {
+            getPaths(arguments).forEach(file1 -> parseFile(file1, startEndDate, threadLowerCase));
+            writeToFile();
+        } else {
+            getPaths(arguments).forEach(JftToCollapseStacks::writeCollapsedWithTimestamp);
+        }
+    }
+
+    private static Stream<Path> getPaths(Arguments arguments) throws IOException {
+        if (arguments.parserType == ParserType.DIRECTORY) {
+            return Files.walk(Paths.get(arguments.path))
+                    .filter(Files::isRegularFile)
+                    .filter(file -> file.getFileName().toString().toLowerCase().endsWith(".jfr") || file.getFileName().toString().toLowerCase().endsWith(".jfr.gz"));
+        }
+        return Stream.of(Paths.get(arguments.path));
+    }
+
+    private static StartEndDate calculateDates(Arguments arguments, Stream<Path> paths) throws ParseException, CouldNotLoadRecordingException, IOException {
+        if (arguments.commonLogDateStr != null) {
+            return calculateDatesFromAccessLog(arguments);
+        } else if (arguments.coolDown != 0 || arguments.warmUp != 0) {
+            return calculateDatesWithCoolDownAndWarmUp(arguments, paths);
+        }
+        return null;
+    }
+
+    private static StartEndDate calculateDatesWithCoolDownAndWarmUp(Arguments arguments, Stream<Path> paths) throws CouldNotLoadRecordingException, IOException {
+        StartEndDate startEndDate = new StartEndDate();
+        for (Path path : paths.collect(Collectors.toList())) {
+            EventArrays flightRecording = getFlightRecording(path);
+            for (EventArray eventArray : flightRecording.getArrays()) {
+                if (!isAsyncWallEvent(eventArray) && !isLockEvent(eventArray) && !isAsyncAllocNewTLABEvent(eventArray) && !isAsyncAllocOutsideTLABEvent(eventArray)) {
+                    continue;
+                }
+                IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
+                for (IItem event : eventArray.getEvents()) {
+                    long startTimestamp = startTimeAccessor.getMember(event).longValue();
+                    Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+                    if (startEndDate.endDate == null || startEndDate.endDate.isBefore(eventDate)) {
+                        startEndDate.endDate = eventDate;
+                    }
+                    if (startEndDate.startDate == null || startEndDate.startDate.isAfter(eventDate)) {
+                        startEndDate.startDate = eventDate;
+                    }
+                }
+            }
         }
 
-        if (args.length == 5) {
-            thread = args[4];
-        }
-        Instant endDate = commonLogDateStr == null ? null : getCommonLogDate(commonLogDateStr).plus(1, ChronoUnit.SECONDS);
-        Long timeMs = durationTimeMsStr == null ? null : Long.parseLong(durationTimeMsStr);
-        Instant startDate = endDate == null || timeMs == null ? null : endDate.minus(1, ChronoUnit.SECONDS).minus(timeMs, ChronoUnit.MILLIS);
+        startEndDate.startDate = startEndDate.startDate.plus(arguments.warmUp, ChronoUnit.SECONDS);
+        startEndDate.endDate = startEndDate.endDate.minus(arguments.coolDown, ChronoUnit.SECONDS);
 
-        String threadLowerCase = thread == null ? null : thread.trim().toLowerCase();
+        return startEndDate;
+    }
 
-        switch (args[0]) {
-            case "-d":
-                Files.walk(Paths.get(args[1]))
-                        .filter(Files::isRegularFile)
-                        .filter(file -> file.getFileName().toString().toLowerCase().endsWith(".jfr") || file.getFileName().toString().toLowerCase().endsWith(".jfr.gz"))
-                        .forEach(file1 -> parseFile(file1, startDate, endDate, threadLowerCase));
-                writeToFile();
-                break;
-            case "-f":
-                parseFile(Paths.get(args[1]), startDate, endDate, threadLowerCase);
-                writeToFile();
-                break;
-            case "-dt":
-                Files.walk(Paths.get(args[1]))
-                        .filter(Files::isRegularFile)
-                        .filter(file -> file.getFileName().toString().toLowerCase().endsWith(".jfr") || file.getFileName().toString().toLowerCase().endsWith(".jfr.gz"))
-                        .forEach(JftToCollapseStacks::writeCollapsedWithTimestamp);
-                break;
-            case "-ft":
-                writeCollapsedWithTimestamp(Paths.get(args[1]));
-                break;
-        }
+    private static StartEndDate calculateDatesFromAccessLog(Arguments arguments) throws ParseException {
+        StartEndDate startEndDate = new StartEndDate();
+        startEndDate.endDate = getCommonLogDate(arguments.commonLogDateStr).plus(1, ChronoUnit.SECONDS);
+        Long timeMs = Long.parseLong(arguments.durationTimeMsStr);
+        startEndDate.startDate = startEndDate.endDate.minus(1, ChronoUnit.SECONDS).minus(timeMs, ChronoUnit.MILLIS);
+        return startEndDate;
     }
 
     private static void writeToFile() throws IOException {
@@ -125,20 +152,26 @@ public class JftToCollapseStacks {
     }
 
     private static void printInfo() {
-        System.out.println("Unrecognized options, proper usage:");
+        System.out.println("Options:");
+        System.out.println("  -d <arg> - scan the <arg> directory to find .jfr and .jfr.gz files");
+        System.out.println("  -f <arg> - parse only the <arg> file");
+        System.out.println("  -ts - add timestamps to collapsed stack files");
+        System.out.println("  -al <arg1> <arg2> - filter by access log mode, see example below");
+        System.out.println("  -t - filter by thread (doesn't work with -ts)");
+        System.out.println("  -w - warmup in seconds - how many seconds from the beginning should be omitted");
+        System.out.println("  -c - cooldown in seconds - how many seconds from the end should be omitted");
+        System.out.println("Proper usage:");
         System.out.println("  java -jar collapse-jfr-full.jar -d <dir> - will merge all files with .jfr extensions to cpu/wall/lock/alloc collapsed stack files");
         System.out.println("  java -jar collapse-jfr-full.jar -f <file> - will convert one file to cpu/wall/lock/alloc collapsed stack files");
-        System.out.println("  java -jar collapse-jfr-full.jar -dt <dir> - will merge all files with .jfr extensions to cpu/wall/lock/alloc collapsed stack files (with timestamp)");
-        System.out.println("  java -jar collapse-jfr-full.jar -ft <file> - will convert one file to cpu/wall/lock/alloc collapsed stack files (with timestamp)");
         System.out.println("You can add end date in \"Common Log Format\" and duration in ms to filter by time.");
         System.out.println("It is designed to use with access log files. Usage:");
-        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> <end date> <duration>");
-        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> <end date> <duration> <thread>");
-        System.out.println("  java -jar collapse-jfr-full.jar -f <file> <end date> <duration>");
-        System.out.println("  java -jar collapse-jfr-full.jar -f <file> <end date> <duration> <thread>");
+        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> -al <end date> <duration>");
+        System.out.println("  java -jar collapse-jfr-full.jar -d <dir> -al <end date> <duration> -t <thread>");
+        System.out.println("  java -jar collapse-jfr-full.jar -f <file> -al <end date> <duration>");
+        System.out.println("  java -jar collapse-jfr-full.jar -f <file> -al <end date> <duration> -t <thread>");
         System.out.println("Example:");
         System.out.println("  access log entry: [17/Sep/2020:13:03:23 +0200] [POST /app/request HTTP/1.1] [302] [- bytes] [23513 ms] [http-nio-8080-exec-250]");
-        System.out.println("  java -jar collapse-jfr-full.jar -d . \"17/Sep/2020:13:03:23 +0200\" 23513 http-nio-8080-exec-250");
+        System.out.println("  java -jar collapse-jfr-full.jar -d . -al \"17/Sep/2020:13:03:23 +0200\" 23513 -t http-nio-8080-exec-250");
     }
 
     private static void writeCollapsedWithTimestamp(Path file) {
@@ -223,7 +256,7 @@ public class JftToCollapseStacks {
         }
     }
 
-    private static void parseFile(Path file, Instant startDate, Instant endDate, String thread) {
+    private static void parseFile(Path file, StartEndDate startEndDate, String thread) {
         System.out.println("Input file: " + file.getFileName());
         System.out.println("Converting JFR to collapsed stack ...");
 
@@ -232,13 +265,13 @@ public class JftToCollapseStacks {
 
             for (EventArray eventArray : flightRecording.getArrays()) {
                 if (isAsyncWallEvent(eventArray)) {
-                    processWallEvent(startDate, endDate, thread, eventArray);
+                    processWallEvent(startEndDate, thread, eventArray);
                 } else if (isLockEvent(eventArray)) {
-                    processLockEvent(startDate, endDate, thread, eventArray);
+                    processLockEvent(startEndDate, thread, eventArray);
                 } else if (isAsyncAllocNewTLABEvent(eventArray)) {
-                    processAllocEvent(startDate, endDate, thread, eventArray, false);
+                    processAllocEvent(startEndDate, thread, eventArray, false);
                 } else if (isAsyncAllocOutsideTLABEvent(eventArray)) {
-                    processAllocEvent(startDate, endDate, thread, eventArray, true);
+                    processAllocEvent(startEndDate, thread, eventArray, true);
                 }
             }
         } catch (Exception e) {
@@ -246,7 +279,7 @@ public class JftToCollapseStacks {
         }
     }
 
-    private static void processAllocEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray, boolean outsideTlab) {
+    private static void processAllocEvent(StartEndDate startEndDate, String thread, EventArray eventArray, boolean outsideTlab) {
         IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
         IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
         IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
@@ -254,20 +287,10 @@ public class JftToCollapseStacks {
         IMemberAccessor<IMCType, IItem> objectClassAccessor = JfrParser.findObjectClassAccessor(eventArray);
 
         for (IItem event : eventArray.getEvents()) {
-            if (endDate != null && startDate != null) {
-                long startTimestamp = startTimeAccessor.getMember(event).longValue();
-                Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
-                if (eventDate.isBefore(startDate) || eventDate.isAfter(endDate)) {
-                    continue;
-                }
+            if (shouldSkipByFilter(startEndDate, thread, startTimeAccessor, threadAccessor, event)) {
+                continue;
             }
 
-            if (thread != null) {
-                String threadName = threadAccessor.getMember(event).getThreadName().toLowerCase();
-                if (!thread.equals(threadName)) {
-                    continue;
-                }
-            }
             String objectClass = objectClassAccessor.getMember(event).getFullName();
             String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor) + ";" + objectClass + (outsideTlab ? "_[i]" : "_[k]");
             long size = allocationSizeAccessor.getMember(event).longValue();
@@ -275,26 +298,15 @@ public class JftToCollapseStacks {
         }
     }
 
-    private static void processLockEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray) {
+    private static void processLockEvent(StartEndDate startEndDate, String thread, EventArray eventArray) {
         IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
         IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
         IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
         IMemberAccessor<IMCType, IItem> monitorClassAccessor = JfrParser.findMonitorClassAccessor(eventArray);
 
         for (IItem event : eventArray.getEvents()) {
-            if (endDate != null && startDate != null) {
-                long startTimestamp = startTimeAccessor.getMember(event).longValue();
-                Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
-                if (eventDate.isBefore(startDate) || eventDate.isAfter(endDate)) {
-                    continue;
-                }
-            }
-
-            if (thread != null) {
-                String threadName = threadAccessor.getMember(event).getThreadName().toLowerCase();
-                if (!thread.equals(threadName)) {
-                    continue;
-                }
+            if (shouldSkipByFilter(startEndDate, thread, startTimeAccessor, threadAccessor, event)) {
+                continue;
             }
 
             String monitorClass = monitorClassAccessor.getMember(event).getFullName();
@@ -303,26 +315,15 @@ public class JftToCollapseStacks {
         }
     }
 
-    private static void processWallEvent(Instant startDate, Instant endDate, String thread, EventArray eventArray) {
+    private static void processWallEvent(StartEndDate startEndDate, String thread, EventArray eventArray) {
         IMemberAccessor<IQuantity, IItem> startTimeAccessor = JfrAttributes.START_TIME.getAccessor(eventArray.getType());
         IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = JfrAttributes.EVENT_STACKTRACE.getAccessor(eventArray.getType());
         IMemberAccessor<IMCThread, IItem> threadAccessor = JfrAttributes.EVENT_THREAD.getAccessor(eventArray.getType());
         IMemberAccessor<String, IItem> stateAccessor = JfrParser.findStateAccessor(eventArray);
 
         for (IItem event : eventArray.getEvents()) {
-            if (endDate != null && startDate != null) {
-                long startTimestamp = startTimeAccessor.getMember(event).longValue();
-                Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
-                if (eventDate.isBefore(startDate) || eventDate.isAfter(endDate)) {
-                    continue;
-                }
-            }
-
-            if (thread != null) {
-                String threadName = threadAccessor.getMember(event).getThreadName().toLowerCase();
-                if (!thread.equals(threadName)) {
-                    continue;
-                }
+            if (shouldSkipByFilter(startEndDate, thread, startTimeAccessor, threadAccessor, event)) {
+                continue;
             }
 
             String stacktrace = fetchFlatStackTrace(event, stackTraceAccessor, threadAccessor);
@@ -331,6 +332,24 @@ public class JftToCollapseStacks {
                 addToCpuMapIfConsumingCpu(stateAccessor.getMember(event), stacktrace);
             }
         }
+    }
+
+    private static boolean shouldSkipByFilter(StartEndDate startEndDate, String thread, IMemberAccessor<IQuantity, IItem> startTimeAccessor, IMemberAccessor<IMCThread, IItem> threadAccessor, IItem event) {
+        if (startEndDate != null) {
+            long startTimestamp = startTimeAccessor.getMember(event).longValue();
+            Instant eventDate = Instant.ofEpochMilli(startTimestamp / 1000000);
+            if (eventDate.isBefore(startEndDate.startDate) || eventDate.isAfter(startEndDate.endDate)) {
+                return true;
+            }
+        }
+
+        if (thread != null) {
+            String threadName = threadAccessor.getMember(event).getThreadName().toLowerCase();
+            if (!thread.equals(threadName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void addToCpuMapIfConsumingCpu(String state, String stacktrace) {
