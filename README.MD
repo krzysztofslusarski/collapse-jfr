@@ -32,10 +32,10 @@ It is design for access log/common log format.
 
 Usage:
 ```
-java -jar collapse-jfr-full.jar -d <dir> <end date> <duration>
-java -jar collapse-jfr-full.jar -d <dir> <end date> <duration> <thread>
-java -jar collapse-jfr-full.jar -f <file> <end date> <duration>
-java -jar collapse-jfr-full.jar -f <file> <end date> <duration> <thread>
+java -jar collapse-jfr-full.jar -d <dir> -al <end date> <duration>
+java -jar collapse-jfr-full.jar -d <dir> -al <end date> <duration> -t <thread>
+java -jar collapse-jfr-full.jar -f <file> -al <end date> <duration>
+java -jar collapse-jfr-full.jar -f <file> -al <end date> <duration> -t <thread>
 ``` 
 Example:
 For access log entry: 
@@ -44,5 +44,5 @@ For access log entry:
 ```
 You can run:
 ```
-java -jar collapse-jfr-full.jar -d . "17/Sep/2020:13:03:23 +0200" 23513 http-nio-8080-exec-250
+java -jar collapse-jfr-full.jar -d . -al "17/Sep/2020:13:03:23 +0200" 23513 -t http-nio-8080-exec-250
 ```

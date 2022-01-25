@@ -15,8 +15,6 @@
  */
 package pl.ks.profiling.jft.converter.collapsed;
 
-import java.util.List;
-import java.util.Map;
 import org.openjdk.jmc.common.IDescribable;
 import org.openjdk.jmc.common.IMCFrame;
 import org.openjdk.jmc.common.IMCMethod;
@@ -29,6 +27,9 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.common.unit.StructContentType;
 import org.openjdk.jmc.flightrecorder.internal.EventArray;
+
+import java.util.List;
+import java.util.Map;
 
 class JfrParser {
     static boolean isAsyncAllocNewTLABEvent(EventArray event) {
@@ -87,16 +88,20 @@ class JfrParser {
                 e.printStackTrace();
                 throw e;
             }
-            String className = method.getType().getTypeName().replace(".", "/");
-            if (className.length() > 0) {
-                builder.append(className);
-                builder.append(".");
+            if (!method.getFormalDescriptor().equals("()L;")) {
+                String className = method.getType().getTypeName().replace(".", "/");
+                if (className.length() > 0) {
+                    builder.append(className);
+                    builder.append(".");
+                }
             }
-
             builder.append(method.getMethodName());
+            if (method.getFormalDescriptor().equals("(Lk;)L;")) {
+                builder.append("_[k]");
+            }
         }
-
-        return builder.toString();
+        String s = builder.toString();
+        return s;
     }
 
     static IMemberAccessor<String, IItem> findStateAccessor(EventArray eventArray) {
