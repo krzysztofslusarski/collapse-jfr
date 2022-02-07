@@ -42,6 +42,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
@@ -137,7 +138,23 @@ public class JftToCollapseStacks {
     private static void writeToFile() throws IOException {
         System.out.println("Saving to collapsed stack files...");
         String saveDir = Paths.get("").toAbsolutePath().toString();
-        CollapsedStackWriter.saveFile(saveDir, "wall.collapsed", WALL_MAP);
+        boolean wallDifferentThenCpu = true;
+        if (WALL_MAP.size() == CPU_MAP.size()) {
+            Long wallStackCount = WALL_MAP.values().stream()
+                    .map(LongHolder::getValue)
+                    .reduce(0L, Long::sum);
+            Long cpuStackCount = WALL_MAP.values().stream()
+                    .map(LongHolder::getValue)
+                    .reduce(0L, Long::sum);
+            if (Objects.equals(cpuStackCount, wallStackCount)) {
+                wallDifferentThenCpu = false;
+            }
+        }
+        if (wallDifferentThenCpu) {
+            CollapsedStackWriter.saveFile(saveDir, "wall.collapsed", WALL_MAP);
+        } else {
+            System.out.println("Omitting wall file, has same frames as CPU");
+        }
         CollapsedStackWriter.saveFile(saveDir, "cpu.collapsed", CPU_MAP);
         if (ALLOC_COUNT_MAP.size() > 0) {
             CollapsedStackWriter.saveFile(saveDir, "alloc.count.collapsed", ALLOC_COUNT_MAP);
